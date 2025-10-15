@@ -8,6 +8,25 @@ app_license = "mit"
 # Apps
 # ------------------
 
+fixtures = [
+    {
+        "doctype": "Number Card",
+        "filters": {
+            "creation": ["between", ["2025-10-08 00:00:00", "2025-10-08 23:59:59"]]
+        }
+    }
+]    
+
+doctype_js= {
+    "POS Invoice" : "public/js/new_dashboard_card.js" ,
+    # "Sales Invoice" : "public/js/pur_inv_create.js",
+} 
+
+doc_events = {
+    "Sales Invoice": {
+        "on_submit": "develop.api.pur_inv_create.create_purchase_invoice"
+    }
+}
 # required_apps = []
 
 # Each item in the list will be shown as an app in the apps page
