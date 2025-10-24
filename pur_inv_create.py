@@ -1,3 +1,86 @@
+supplier_items_map = {}
+
+for item in doc.items:
+    # 1. कस्टम आइटम टाइप (Custom Item Type) प्राप्त करें
+    item_type = frappe.db.get_value("Item", item.item_code, "custom_item_type")
+    
+    # 2. अगर आइटम कंसाइनमेंट (Consignment) नहीं है, तो आगे बढ़ें (Skip)
+    if item_type != "Consignment":
+        continue
+    
+    remaining_qty = item.qty
+
+    # 3. इस आइटम के लिए बाकी बची Quantity के साथ खरीद रसीदें (Purchase Receipts - PRs) Fetch करें।
+    # यह FIFO (First-In, First-Out) क्रम में होना चाहिए।
+    receipts = frappe.db.sql("""
+        SELECT 
+            pri.parent AS purchase_receipt,
+            pri.rate,
+            pri.item_code,
+            pri.name AS row_name,
+            pr.supplier,
+            # शेष Quantity की गणना करें जो अभी तक बिल नहीं हुई है:
+            (pri.qty - (pri.qty * IFNULL(pri.billed_amt, 0) / IFNULL(pri.net_amount, 1))) AS remaining_qty
+        FROM 
+            `tabPurchase Receipt Item` AS pri
+        JOIN 
+            `tabPurchase Receipt` AS pr 
+        ON 
+            pr.name = pri.parent
+        WHERE 
+            pri.item_code = %s
+            AND pr.docstatus = 1
+            AND (pri.qty - (pri.qty * IFNULL(pri.billed_amt, 0) / IFNULL(pri.net_amount, 1))) > 0
+        ORDER BY 
+            pr.posting_date ASC -- FIFO Order के लिए सबसे पुरानी तारीख पहले
+    """, (item.item_code,), as_dict=True)
+
+    # 4. खरीद रसीदों (PRs) से बिल करने के लिए Quantity आवंटित करें
+    for receipt in receipts:
+        if remaining_qty <= 0:
+            break
+        
+        # आवंटित करने के लिए कम से कम Quantity चुनें (बाकी बची ज़रूरत या PR में उपलब्ध Qty)
+        qty_to_bill = min(remaining_qty, receipt["remaining_qty"])
+        remaining_qty = remaining_qty - qty_to_bill
+
+        supplier_name = receipt["supplier"]
+        
+        if supplier_name not in supplier_items_map:
+            supplier_items_map[supplier_name] = []
+        
+        # सप्लायर मैप में आइटम डेटा जोड़ें।
+        supplier_items_map[supplier_name].append({
+            "item_code": receipt["item_code"],
+            "rate": receipt["rate"],
+            "qty": qty_to_bill,
+            "purchase_receipt": receipt["purchase_receipt"],
+            "pr_detail": receipt["row_name"],
+            "cost_center": doc.cost_center # Cost Center को आइटम रो पर सेट करना
+        })
+
+# --- Step 2: हर सप्लायर के लिए Purchase Invoices बनाएँ और सबमिट करें ---
+for supplier, items in supplier_items_map.items():
+    try:
+        pi = frappe.new_doc("Purchase Invoice")
+        pi.supplier = supplier
+        
+        # Purchase Invoice हेडर पर Cost Center सेट करना
+        pi.cost_center = doc.cost_center 
+        
+        # VAT Taxes and Charges को कॉपी करना
+        pi.taxes_and_charges = doc.taxes_and_charges
+        
+        for item_data in items:
+            pi.append("items", item_data)
+        
+        pi.insert(ignore_permissions=True)
+        pi.submit()
+
+    except Exception as e:
+        frappe.log_error(title=f"Error creating PI for {supplier}", message=str(e))
+
+##################################### code 1 ######################################
 import frappe
 from collections import defaultdict
 
@@ -69,7 +152,7 @@ def create_purchase_invoice(doc, method):
         pi.submit()
         frappe.msgprint(f"Purchase Invoice {pi.name} created for supplier {supplier}")
 
-###################################################################################################
+######################################### code 2 ##########################################################
 y dircet server script pr run krne k liye 
 # Step 1: Initialize a map using a standard Python dictionary.
 supplier_items_map = {} 
@@ -149,4 +232,5 @@ for supplier, items in supplier_items_map.items():
         # Simple logging taaki script fail na ho
         frappe.log_error(f"Failed to create/submit Purchase Invoice for Supplier {supplier}: {e}", "Consignment PI Create Error")
         frappe.msgprint(f"Error creating Purchase Invoice for Supplier {supplier}. Please check the Error Log.", title="Warning", indicator="red")
+
 
